@@ -12,10 +12,11 @@ are done. SRWM and DeltaNet arrive in M2.
 ```python
 class SequenceLayer(Protocol[S]):
     d_model: int
+
     def init_state(self, batch: int) -> S: ...
-    def step(self, x, state: S) -> tuple[Tensor, S]: ...   # (B, d) -> (B, d)
+    def step(self, x, state: S) -> tuple[Tensor, S]: ...  # (B, d) -> (B, d)
     def scan(self, xs, state: S) -> tuple[Tensor, S]: ...  # (B, T, d) -> (B, T, d)
-    def reset(self, state: S, mask) -> S: ...              # mask: (B,) bool
+    def reset(self, state: S, mask) -> S: ...  # mask: (B,) bool
 ```
 
 - **Layers are pure.** `step` and `scan` return a new state and never modify the
@@ -32,13 +33,15 @@ Writing a layer:
 ```python
 from srwm import SequenceLayerBase, State, state_dataclass
 
+
 @state_dataclass
 class MyState(State):
     h: Tensor
 
+
 class MyLayer(SequenceLayerBase[MyState]):
     def init_state(self, batch): ...
-    def _step(self, x, state): ...   # step, scan and reset come from the base class
+    def _step(self, x, state): ...  # step, scan and reset come from the base class
 ```
 
 ## Conformance suite
@@ -49,6 +52,7 @@ class MyLayer(SequenceLayerBase[MyState]):
 from srwm.testing import CHECKS, LayerSpec
 
 SPEC = LayerSpec(factory=lambda: MyLayer(d_model=4), d_model=4)
+
 
 @pytest.mark.parametrize("check", list(CHECKS))
 def test_conformance(check):
