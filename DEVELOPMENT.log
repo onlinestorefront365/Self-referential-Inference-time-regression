@@ -1,0 +1,27 @@
+# srwm development log
+# Format: <UTC timestamp> [<milestone>] <TYPE> <message>
+# Types: DECISION, BUILD, FINDING, FIX, CI, BRANCH, NOTE
+
+2026-10-24T00:00Z [plan] DECISION Mechanism: self-modifying weight matrix (SRWM, Irie et al. 2022); task: in-context regression.
+2026-10-24T00:00Z [plan] DECISION Deliverable: plan only for now; frameworks: PyTorch and JAX.
+2026-10-25T00:00Z [plan] DECISION End goal is a core library API. A stable SequenceLayer contract; SRWM, DeltaNet and LSTM are backends behind it.
+2026-10-25T00:00Z [plan] DECISION API = Python library first; network service out of scope until v0.1 has proven itself in-process.
+2026-10-25T00:00Z [plan] DECISION Audience: ML researchers / systems engineers. Tokens, vectors and feature tensors handled by InputAdapter/OutputHead, outside the layer.
+2026-10-25T00:00Z [plan] DECISION JAX deferred to M6. PyTorch is the only reference backend.
+2026-10-25T00:00Z [plan] DECISION TaskSampler: linear first, 2-layer MLP functions supported from M3.
+2026-10-25T00:00Z [plan] DECISION torch.compile: step fullgraph with zero recompiles; scan fullgraph per fixed-length chunk (not over variable T, which would unroll and recompile per length).
+2026-10-25T00:00Z [plan] DECISION State: frozen, tensor-only, pytree-registered dataclass; schema version is a class constant; semi-private torch APIs isolated in srwm/_compat.py.
+2026-10-25T01:30Z [M1] BUILD   Environment: Python 3.13.17, torch 2.14.1+cpu, 4 CPUs, no GPU.
+2026-10-25T01:35Z [M1] DECISION state.step is (B,) int64, not 0-d: per-stream reset needs per-stream counts. Still a tensor, so no recompiles.
+2026-10-25T01:40Z [M1] FINDING purity check: copy.deepcopy fails on non-leaf state tensors. Fixed the check to snapshot with tree_map(detach().clone()).
+2026-10-25T01:40Z [M1] FINDING compile_step: LSTM step compiled twice. init_state returned h0.expand() (stride 0); after one step the state is contiguous, so the stride guard failed.
+2026-10-25T01:41Z [M1] FIX     LSTM init_state uses repeat() instead of expand(). The check stays strict (exactly 1 compile); its failure message names this cause.
+2026-10-25T01:43Z [M1] FIX     A SCHEMA_VERSION annotation in a subclass now raises a clear TypeError, instead of dataclass field-ordering noise.
+2026-10-25T01:44Z [M1] BUILD   Added negative tests: the suite rejects in-place mutation, a stride-0 init state, cross-stream leakage and value-dependent branching.
+2026-10-25T01:45Z [M1] BUILD   Local gate: ruff check, ruff format --check, mypy --strict (srwm/core), pytest 24 passed.
+2026-10-25T01:47Z [M1] CI      Commit 378d7ad pushed to ccr-d347cbb9-47pcb6. CI run 40152020804: FAILED at the Lint step (both 3.10 and 3.12).
+2026-10-25T01:58Z [M1] FINDING Cause: README.md was written after the last local format run; ruff format also formats Python code blocks in Markdown. The code itself was fine.
+2026-10-25T01:58Z [M1] FIX     Reformatted README (844fb41). Lesson: rerun the full gate after every edit, docs included.
+2026-10-25T02:00Z [M1] CI      CI run 40152697980 on 844fb41: SUCCESS on Python 3.10 and 3.12. M1 locked in.
+2026-10-27T00:00Z [M1] BUILD   Rewrote README with full documentation; added this log.
+2026-10-27T00:00Z [M1] BRANCH  Created master from M1 (stable baseline). M2 is developed on the temporary branch tmp/m2.
