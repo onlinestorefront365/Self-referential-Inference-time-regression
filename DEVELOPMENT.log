@@ -25,3 +25,13 @@
 2026-10-25T02:00Z [M1] CI      CI run 40152697980 on 844fb41: SUCCESS on Python 3.10 and 3.12. M1 locked in.
 2026-10-27T00:00Z [M1] BUILD   Rewrote README with full documentation; added this log.
 2026-10-27T00:00Z [M1] BRANCH  Created master from M1 (stable baseline). M2 is developed on the temporary branch tmp/m2.
+2026-10-27T00:10Z [M2] BUILD   Added check compile_step_grad: step compiled with fullgraph and grad enabled, BPTT over 10 steps; exactly one compile, every parameter gets a gradient, compiled gradients match eager.
+2026-10-27T00:15Z [M2] BUILD   DeltaNetLayer: multi-head delta-rule fast weights, softmax φ, sigmoid β, learned initial fast weights (zero init).
+2026-10-27T00:15Z [M2] BUILD   SRWMLayer: multi-head self-referential weight matrix (3·d_head + 4 rows), 4 learning rates per head (y/k/q/β row blocks); self_modify=False ablation.
+2026-10-27T00:20Z [M2] DECISION DeltaNet initial memory is a parameter: a constant zeros init has requires_grad False at step 0 and True afterwards, so the compiled training path would recompile.
+2026-10-27T00:20Z [M2] BUILD   Negative test: a constant-init DeltaNet passes compile_step (no grad) and fails compile_step_grad. This confirms the new check catches the trap the old one could not.
+2026-10-27T00:25Z [M2] BUILD   Conformance now runs every check on lstm, deltanet, srwm and srwm_frozen (4 x 13 = 52 cases): all pass.
+2026-10-27T00:30Z [M2] FINDING A delta-rule test assumed one update with σ(β)=1 stores v exactly. Wrong: the retrieval error shrinks by (1 − σ(β)‖φ(k)‖²), and softmax keys have norm < 1. The test was wrong, the layer right; replaced with an exact identity test.
+2026-10-27T00:32Z [M2] FIX     test_delta_rule set the global default dtype at import, leaking into later test modules. Moved it into an autouse fixture that restores the previous dtype.
+2026-10-27T00:35Z [M2] BUILD   SRWM and DeltaNet verified against naive per-stream, per-head reference loops for 4 steps (1 and 2 heads).
+2026-10-27T00:35Z [M2] BUILD   Local gate: ruff check, ruff format --check, mypy --strict, pytest 74 passed.

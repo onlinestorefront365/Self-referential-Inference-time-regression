@@ -261,6 +261,43 @@ def check_compile_step(spec: LayerSpec, n_steps: int = 100) -> None:
     _check(bool((s.step == n_steps).all()), "compiled step did not advance state.step")
 
 
+def check_compile_step_grad(spec: LayerSpec, n_steps: int = 10) -> None:
+    """Training path: step compiled with grad on, then backprop through time."""
+    layer = _build(spec)
+    xs = _inputs(spec, torch.float32, seq_len=n_steps)
+    params = dict(layer.named_parameters())
+
+    def run(step_fn: Callable[[Tensor, Any], tuple[Tensor, Any]]) -> dict[str, Tensor | None]:
+        layer.zero_grad(set_to_none=True)
+        s = layer.init_state(spec.batch)
+        loss = xs.new_zeros(())
+        for t in range(n_steps):
+            y, s = step_fn(xs[:, t], s)
+            loss = loss + y.square().mean()
+        loss.backward()
+        return {n: None if p.grad is None else p.grad.clone() for n, p in params.items()}
+
+    eager = run(layer.step)
+    _compat.dynamo_reset()
+    counter = _compat.CompileCounter()
+    compiled = run(torch.compile(layer.step, backend=counter, fullgraph=True))
+    _check(
+        counter.frame_count == 1,
+        f"step compiled {counter.frame_count} times with grad enabled, expected 1. A common "
+        "cause is an init_state that does not require grad while later states do "
+        "(e.g. a constant initial memory instead of one derived from a parameter).",
+    )
+    for name in params:
+        g_eager, g_comp = eager[name], compiled[name]
+        _check(g_eager is not None, f"parameter {name} received no gradient")
+        _check(g_comp is not None, f"parameter {name} received no gradient when compiled")
+        assert g_eager is not None and g_comp is not None
+        _check(
+            torch.allclose(g_eager, g_comp, atol=1e-5, rtol=1e-4),
+            f"compiled gradient for {name} differs from eager",
+        )
+
+
 def check_compile_scan(spec: LayerSpec, n_chunks: int = 3) -> None:
     layer = _build(spec)
     xs = _inputs(spec, torch.float32, seq_len=spec.seq_len * n_chunks)
@@ -301,6 +338,7 @@ CHECKS: dict[str, Callable[[LayerSpec], None]] = {
     "determinism": check_determinism,
     "gradients": check_gradients,
     "compile_step": check_compile_step,
+    "compile_step_grad": check_compile_step_grad,
     "compile_scan": check_compile_scan,
     "compiled_matches_eager": check_compiled_matches_eager,
 }

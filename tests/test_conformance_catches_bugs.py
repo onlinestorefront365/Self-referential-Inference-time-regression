@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch import Tensor
 
+from srwm.layers.deltanet import DeltaNetLayer, DeltaNetState
 from srwm.layers.lstm import LSTMLayer, LSTMState
 from srwm.testing import CHECKS, LayerSpec
 from srwm.testing.conformance import ConformanceError
@@ -40,6 +41,22 @@ class BranchingLSTM(LSTMLayer):
         if x.sum() > 0:
             x = x * 2
         return super()._step(x, state)
+
+
+class ConstantInitDeltaNet(DeltaNetLayer):
+    """Starts from a constant zero memory: no grad at step 0, grad from step 1 on."""
+
+    def init_state(self, batch: int) -> DeltaNetState:
+        s = super().init_state(batch)
+        return s.replace(W=torch.zeros_like(s.W).detach())
+
+
+def test_grad_check_rejects_constant_initial_memory() -> None:
+    spec = LayerSpec(factory=lambda: ConstantInitDeltaNet(d_model=4, n_heads=2), d_model=4)
+    with pytest.raises(ConformanceError, match="grad enabled|no gradient"):
+        CHECKS["compile_step_grad"](spec)
+    # The same layer is fine for inference: the no-grad compile check passes.
+    CHECKS["compile_step"](spec)
 
 
 @pytest.mark.parametrize(

@@ -11,8 +11,9 @@ and any third-party layer — sits behind one contract, `SequenceLayer`. Callers
 program against the contract, so the model behind it can change without breaking
 them.
 
-> **Status: M1 complete.** The contract, the conformance suite and an LSTM
-> reference layer are done and green in CI. SRWM and DeltaNet are M2.
+> **Status: M2 complete on `tmp/m2`.** The contract, the conformance suite and
+> three layers (LSTM, DeltaNet, SRWM) are done; each passes all 13 conformance
+> checks. Meta-training (M3) is next. `master` holds M1.
 > See [`DEVELOPMENT.log`](DEVELOPMENT.log) for the full history.
 
 ---
@@ -23,20 +24,21 @@ them.
 2. [Install](#install)
 3. [Quickstart](#quickstart)
 4. [Architecture](#architecture)
-5. [The `SequenceLayer` contract](#the-sequencelayer-contract)
-6. [State rules](#state-rules)
-7. [Writing a layer](#writing-a-layer)
-8. [Input adapters and output heads](#input-adapters-and-output-heads)
-9. [Conformance suite](#conformance-suite)
-10. [torch.compile guidance](#torchcompile-guidance)
-11. [PyTorch internals policy](#pytorch-internals-policy)
-12. [Project layout](#project-layout)
-13. [Development workflow](#development-workflow)
-14. [Branches](#branches)
-15. [Roadmap](#roadmap)
-16. [Design decisions](#design-decisions)
-17. [Known limitations](#known-limitations)
-18. [References](#references)
+5. [Layers](#layers)
+6. [The `SequenceLayer` contract](#the-sequencelayer-contract)
+7. [State rules](#state-rules)
+8. [Writing a layer](#writing-a-layer)
+9. [Input adapters and output heads](#input-adapters-and-output-heads)
+10. [Conformance suite](#conformance-suite)
+11. [torch.compile guidance](#torchcompile-guidance)
+12. [PyTorch internals policy](#pytorch-internals-policy)
+13. [Project layout](#project-layout)
+14. [Development workflow](#development-workflow)
+15. [Branches](#branches)
+16. [Roadmap](#roadmap)
+17. [Design decisions](#design-decisions)
+18. [Known limitations](#known-limitations)
+19. [References](#references)
 
 ---
 
@@ -78,9 +80,9 @@ pip install -e ".[dev]"
 
 ```python
 import torch
-from srwm.layers import LSTMLayer
+from srwm.layers import SRWMLayer
 
-layer = LSTMLayer(d_model=16)
+layer = SRWMLayer(d_model=16, n_heads=4)
 state = layer.init_state(batch=4)
 
 # streaming: one token at a time
@@ -111,11 +113,54 @@ The library is built in four layers. Each one depends only on the ones below it.
 | 4. Backends | PyTorch (reference); JAX later, behind the same protocols | PyTorch done |
 | 3. Training plumbing | `TaskSampler`, `meta_train`, versioned checkpoints | M3 |
 | 2. Inference-time regressor | `Regressor`, `Session` (`observe`, `predict`, save/load, `fork`) | M4 |
-| 1. Core contract | `SequenceLayer`, `State`, `InputAdapter`, `OutputHead`, conformance suite | **M1 done** |
+| 1. Core contract | `SequenceLayer`, `State`, `InputAdapter`, `OutputHead`, conformance suite; LSTM, DeltaNet and SRWM layers | **M1 and M2 done** |
 
 **Layers are pure functions of `(input, state)`.** All mutation lives in the
 `Session` wrapper (M4), which holds the current state and replaces it on every
 call. This keeps the core compilable and makes a JAX port mechanical.
+
+## Layers
+
+All three live in `srwm.layers` and pass the full conformance suite.
+φ is softmax throughout.
+
+| Layer | State | What changes at inference time |
+|---|---|---|
+| `SRWMLayer(d_model, n_heads=1, *, self_modify=True)` | `SRWMState.W`: `(B, H, 3·d_head + 4, d_head)` | The layer's **own** weight matrix. |
+| `DeltaNetLayer(d_model, n_heads=1)` | `DeltaNetState.W`: `(B, H, d_head, d_head)` | A separate fast-weight matrix. The slow projections stay fixed. |
+| `LSTMLayer(d_model)` | `LSTMState.h`, `LSTMState.c`: `(B, d_model)` | The hidden state only (the classic baseline). |
+
+**SRWM**, per head, with `x` the head's slice of the input:
+
+```
+[y, k, q, β] = W x                    # β has 4 entries
+v = W φ(q);   v̄ = W φ(k)
+W ← W + σ(β) ⊙ (v − v̄) ⊗ φ(k)        # one learning rate per row block: y, k, q, β
+output = out_proj(concat_heads(y))     # y is read before the update
+```
+
+- There are no separate slow weights. The learned parameter `W0` is only the
+  starting point: every later matrix is written by the model itself.
+- `self_modify=False` freezes `W` at `W0`. This is the ablation that shows the
+  self-update matters.
+
+**DeltaNet**, per head:
+
+```
+q, k, v, b = slow(x)
+v̄ = W φ(k);   W ← W + σ(b) (v − v̄) ⊗ φ(k);   y = W φ(q)
+```
+
+- This is the non-self-referential baseline: SRWM against DeltaNet is the key
+  ablation.
+- The initial fast weights are a learned parameter, initialised to zero (see
+  [Design decisions](#design-decisions)).
+
+**What one update does.** A single update scales the retrieval error
+`W φ(k) − v` by exactly `1 − σ(β)·‖φ(k)‖²`. Softmax keys have
+`‖φ(k)‖ < 1`, so one step never stores `v` exactly. The model has to learn
+how sharp to make its keys and how large to make β.
+`tests/test_delta_rule.py` checks this identity.
 
 ## The `SequenceLayer` contract
 
@@ -234,7 +279,8 @@ Alternatively, `run_conformance(SPEC)` returns a list of `CheckResult`s and neve
 | `serialization` | Round-trips through `torch.load(weights_only=True)`; a resumed stream equals an uninterrupted one; a wrong schema version is rejected |
 | `determinism` | The same seed gives bit-identical results |
 | `gradients` | `gradcheck` on the inputs and every parameter (float64) |
-| `compile_step` | `fullgraph=True`, exactly one compile across 100 streaming steps |
+| `compile_step` | `fullgraph=True`, exactly one compile across 100 streaming steps (no grad) |
+| `compile_step_grad` | Training path: `fullgraph=True` with grad on, exactly one compile; every parameter gets a gradient; compiled gradients equal eager ones |
 | `compile_scan` | `fullgraph=True` for a fixed chunk length; at most one recompile across 3 chunks |
 | `compiled_matches_eager` | Inductor output equals eager within 1e-5 |
 
@@ -243,7 +289,9 @@ deliberately broken layers:
 - one that mutates its input state in place,
 - one with a stride-0 initial state,
 - one that leaks information between streams,
-- one that branches on a tensor value.
+- one that branches on a tensor value;
+- one whose initial memory is a constant that doesn't require grad. It passes
+  the inference compile check but fails `compile_step_grad`.
 
 ## torch.compile guidance
 
@@ -259,6 +307,11 @@ deliberately broken layers:
   `.clone()`, not `.expand()`. A stride-0 tensor at step 0 that turns
   contiguous at step 1 forces a recompile. The conformance suite catches this
   and names the cause.
+- **Initial state and gradients:** with grad on, every state tensor must have
+  the same `requires_grad` at every step. A constant `torch.zeros` initial
+  memory has none at step 0 and gets one from step 1, so the training path
+  recompiles. Derive the initial state from a parameter, as `W0` in DeltaNet
+  and SRWM does.
 
 ## PyTorch internals policy
 
@@ -279,12 +332,15 @@ srwm/
     protocols.py         SequenceLayer, InputAdapter, OutputHead, SequenceLayerBase
   layers/
     lstm.py              LSTMLayer, LSTMState
+    deltanet.py          DeltaNetLayer, DeltaNetState
+    srwm.py              SRWMLayer, SRWMState
   testing/
     conformance.py       LayerSpec, CHECKS, run_conformance
 tests/
-  test_lstm_conformance.py
-  test_conformance_catches_bugs.py
-  test_state.py
+  test_layer_conformance.py        every check x {lstm, deltanet, srwm, srwm_frozen}
+  test_delta_rule.py               SRWM and DeltaNet vs naive per-head loops; update identities
+  test_conformance_catches_bugs.py the suite rejects broken layers
+  test_state.py                    State validation and serialisation
 .github/workflows/ci.yml
 DEVELOPMENT.log          chronological development log
 ```
@@ -309,7 +365,7 @@ editing this README. Missing that broke CI run #1.
 | Branch | Role |
 |---|---|
 | `master` | Stable baseline. Holds only finished, CI-green milestones (currently M1). |
-| `tmp/m2` | Temporary working branch for M2 (SRWM and DeltaNet). Merges into `master` once green. |
+| `tmp/m2` | Temporary working branch for M2 (SRWM and DeltaNet). Merges into `master` after review. |
 | `main` | The repository's original default branch (initial commit only). |
 | `ccr-d347cbb9-47pcb6` | The session branch where M1 was developed. |
 
@@ -318,7 +374,7 @@ editing this README. Missing that broke CI run #1.
 | # | Deliverable | Acceptance criterion |
 |---|---|---|
 | M1 ✅ | Contract, conformance suite, LSTM | LSTM passes the suite in CI |
-| M2 | SRWM and DeltaNet layers; compile check with gradients on | Both pass the suite; delta-rule and gradcheck tests pass |
+| M2 ✅ | SRWM and DeltaNet layers; compile check with gradients on | Both pass the suite; delta-rule and gradcheck tests pass |
 | M3 | `TaskSampler` (linear and 2-layer MLP), `meta_train`, checkpoints | SRWM error within 2× of OLS at n ≥ 2d |
 | M4 | `Regressor` / `Session` API (`observe`, `predict`, save/load, `fork`); full set of adapters | Streaming example runs; a saved-and-resumed session gives identical outputs |
 | M5 | Packaging, docs, v0.1.0 | `pip install` works; CI green |
@@ -334,14 +390,21 @@ editing this README. Missing that broke CI run #1.
 | `state.step` is `(B,)`, not 0-d | Per-stream reset needs a per-stream count. It is still a tensor, so it causes no recompiles. |
 | Only tensors in state | Python scalars become compile guards and cause recompiles. |
 | Compile `scan` per chunk, not over the whole sequence | A loop over variable `T` unrolls, recompiles per length and has unbounded compile time. |
+| DeltaNet's initial fast weights are learned (zero init) | The textbook constant zero memory doesn't require grad at step 0, so the compiled training path would recompile. A zero-initialised parameter starts out mathematically identical. |
+| SRWM has 4 learning rates per head | One each for the y, k, q and β row blocks, following the reference implementation. |
+| Layers don't include LayerNorm, the FFN or residuals | These belong in a block or stack wrapper (M3), so each layer stays a single, testable mechanism. |
 | PyTorch only until M6 | Get the reference right first. A functional core costs PyTorch nothing and keeps the JAX port cheap. |
 | Linear and MLP task samplers | Linear tasks verify convergence to OLS/ridge. MLP tasks show that non-linear in-context learning works, which justifies the library over plain linear attention. |
 
 ## Known limitations
 
 - **CPU only in CI.** The CUDA-graph streaming speedup is untested.
-- **The compile checks run without gradients.** A check with gradients on is planned
-  for M2, before M3 meta-training.
+- **No stacking yet.** A stack of layers needs a composite state, and every state
+  field currently has to be a tensor. Nested states are an M3 design item.
+- **Nothing is trained yet.** M2 proves the layers are correct and compilable,
+  not that SRWM learns in-context regression; that is the M3 acceptance test.
+- **`scan` is a Python loop over `step`.** It is correct and compiles per chunk,
+  but there is no parallel or fused kernel for long sequences.
 - **`main` and `master` both exist.** Pick one as the default branch in
   the GitHub settings.
 
