@@ -36,4 +36,7 @@
 2026-10-27        [M2] FIX     test_delta_rule set the global default dtype at import, leaking into later test modules. Moved it into an autouse fixture that restores the previous dtype.
 2026-10-27        [M2] BUILD   SRWM and DeltaNet verified against naive per-stream, per-head reference loops for 4 steps (1 and 2 heads).
 2026-10-27        [M2] BUILD   Local gate: ruff check, ruff format --check, mypy --strict, pytest 74 passed.
-2026-10-27T07:27Z [M2] CI      Commit 6e26582 pushed to tmp/m2; CI pending.
+2026-10-27T07:27Z [M2] CI      Commit 6e26582 pushed to tmp/m2.
+2026-10-27T07:24Z [M1] CI      CI run 40466785726 on master at 70d306a: SUCCESS (Python 3.10, 3.12).
+2026-10-27T07:29Z [M2] CI      CI run 40467227998 on tmp/m2 at 6e26582: SUCCESS (Python 3.10, 3.12). M2 complete.
+2026-10-27T07:29Z [M2] CI      CI run 40467258291 on tmp/m2 at 71a12f8 (log timestamp correction): SUCCESS.
