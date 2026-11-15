@@ -43,11 +43,12 @@ def _sinusoidal(n: int, rng: np.random.RandomState) -> np.ndarray:
 
 def _fibonacci(n: int, rng: np.random.RandomState) -> np.ndarray:
     a, b = rng.uniform(0.1, 0.5), rng.uniform(0.1, 0.5)
-    vals = [a, b]
+    vals = [float(a), float(b)]
     for _ in range(n - 2):
         vals.append(vals[-1] + vals[-2])
-    vals = np.array(vals[:n], dtype=np.float32)
-    return (vals - vals.mean()) / (vals.std() + 1e-8)
+    vals = np.array(vals[:n], dtype=np.float64)
+    vals = (vals - vals.mean()) / (vals.std() + 1e-8)
+    return vals.astype(np.float32)
 
 
 def _power(n: int, rng: np.random.RandomState) -> np.ndarray:
