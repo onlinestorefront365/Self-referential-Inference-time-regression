@@ -9,9 +9,7 @@ class SRConfig:
     n_blocks: int = 2
     dropout: float = 0.1
 
-    # Fast weight dynamics
-    fast_lr: float = 0.1      # write rate per step
-    fast_decay: float = 0.95  # exponential decay (~20-step effective horizon)
+    # Fast weight dynamics — per-operator rates set in modal.py MODAL_DYNAMICS
 
     # Task
     input_dim: int = 1
